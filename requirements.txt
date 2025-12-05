@@ -1,0 +1,11 @@
+echo "pandas
+numpy
+scikit-learn
+joblib
+kafka-python
+psycopg2-binary
+sqlalchemy
+fastapi
+uvicorn
+streamlit
+requests" > requirements.txt
