@@ -1,28 +1,38 @@
 import pandas as pd
-file_path = "C:\Users\willi\Engenering Project\SAFER-6G-Project\data\raw\UNSW_NB15_testing-set.parquet"
+import numpy as np
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+import joblib
+import os
 
-def load_and_preprocess_data(file_path: str):
-    print(f"Chargement des données depuis {file_path}...")
-    
-    # --- Changement clé ici : utiliser read_parquet ---
-    try:
-        data = pd.read_parquet(file_path)
-    except FileNotFoundError:
-        print("Erreur : Fichier Parquet non trouvé. Vérifiez le chemin.")
-        return None
+file_path = r"C:\Users\willi\Engenering Project\SAFER-6G-Project\data\raw\UNSW_NB15_testing-set.parquet"
 
-    # --- Étape de Prétraitement ---
-    # 1. Gestion des valeurs manquantes, etc.
-    # 2. Encodage des caractéristiques catégorielles
-    # ...
-    
-    return data
+print("Chargement des données")
+df = pd.read_parquet(file_path)
 
-# Utilisation:
-raw_file_path = 'data/raw/mon_dataset.parquet'
-clean_df = load_and_preprocess_data(raw_file_path)
+df = df.dropna()
 
-if clean_df is not None:
-    # Sauvegarde des données nettoyées en format CSV ou Parquet compressé
-    clean_df.to_csv('data/processed/clean_dataset.csv', index=False)
-    print("Prétraitement terminé. Données sauvegardées.")
+print("Conversion des colonnes non-numériques")
+le = LabelEncoder()
+
+for col in df.columns:
+    if not pd.api.types.is_numeric_dtype(df[col]):
+        print(f"   > Encodage de la colonne : {col}")
+        df[col] = le.fit_transform(df[col].astype(str))
+
+target_col = 'label' if 'label' in df.columns else df.columns[-1]
+X = df.drop(columns=[target_col])
+y = df[target_col]
+
+print("Normalisation des données")
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+print("Sauvegarde des fichiers")
+os.makedirs('data/processed', exist_ok=True)
+joblib.dump(scaler, 'data/processed/scaler.pkl')
+
+clean_data = pd.DataFrame(X_scaled, columns=X.columns)
+clean_data['label'] = y.values
+clean_data.to_csv('data/processed/clean_dataset.csv', index=False)
+
+print("Terminé ! Le fichier est prêt dans data/processed/clean_dataset.csv")
