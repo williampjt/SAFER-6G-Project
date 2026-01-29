@@ -5,14 +5,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-# --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(
     page_title="SAFER-6G Dashboard",
     page_icon="🛡️",
     layout="wide"
 )
 
-# CSS pour améliorer l'esthétique
 st.markdown("""
 <style>
     .stMetric {
@@ -25,7 +23,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. GÉNÉRATEUR DE DONNÉES (MOCKUP) ---
 def generate_mock_data(n_rows=500):
     slices = np.random.choice(['eMBB', 'URLLC', 'mMTC'], n_rows, p=[0.4, 0.2, 0.4])
     data = []
@@ -33,17 +30,16 @@ def generate_mock_data(n_rows=500):
     for s in slices:
         timestamp = datetime.now() - timedelta(minutes=np.random.randint(0, 60))
         
-        # Logique simulée 6G
         if s == 'eMBB': 
-            src_bytes = np.random.randint(50000, 1000000) # High Traffic
+            src_bytes = np.random.randint(50000, 1000000)
             latency = np.random.uniform(5, 20)
             is_attack = np.random.choice([0, 1], p=[0.90, 0.10])
         elif s == 'URLLC': 
-            src_bytes = np.random.randint(100, 2000) # Low Traffic (control)
+            src_bytes = np.random.randint(100, 2000)
             latency = np.random.uniform(0.1, 2.0)
             is_attack = np.random.choice([0, 1], p=[0.95, 0.05])
-        else: # mMTC
-            src_bytes = np.random.randint(20, 5000) # Medium/Low
+        else:
+            src_bytes = np.random.randint(20, 5000)
             latency = np.random.uniform(20, 100)
             is_attack = np.random.choice([0, 1], p=[0.85, 0.15])
 
@@ -63,47 +59,38 @@ def generate_mock_data(n_rows=500):
     
     return pd.DataFrame(data).sort_values('ts')
 
-# Chargement
 if 'data' not in st.session_state:
     st.session_state['data'] = generate_mock_data(500)
 df = st.session_state['data']
 
-# --- HEADER ---
 st.title("🛡️ SAFER-6G Security Dashboard")
 st.markdown("Decision Support System for **eMBB, URLLC, & mMTC** Network Slices")
 st.divider()
 
-# --- DÉBUT DE LA GRILLE 2x2 ---
 row1_col1, row1_col2 = st.columns(2)
 
-# ==========================================
-# BLOC 1 : NETWORK OVERVIEW (Modifié)
-# ==========================================
+# BLOC 1 : NETWORK OVERVIEW
 with row1_col1:
     with st.container(border=True):
         st.subheader("1️⃣ Network Overview")
         
-        # Calculs
         total_flows = len(df)
         n_attack = len(df[df['prediction'] == 1])
         n_normal = len(df[df['prediction'] == 0])
         
-        # Conversion en Pourcentages
         pct_attack = (n_attack / total_flows) * 100
         pct_normal = (n_normal / total_flows) * 100
         
-        # Logique de Statut avec Couleurs
         if pct_attack < 5:
             status_txt = "NETWORK STATUS: OK"
-            status_type = "success" # Vert
+            status_type = "success"
         elif pct_attack < 15:
             status_txt = "NETWORK STATUS: WARNING"
-            status_type = "warning" # Jaune
+            status_type = "warning"
         else:
             status_txt = "NETWORK STATUS: CRITICAL"
-            status_type = "error" # Rouge
+            status_type = "error"
 
-        # Affichage du bandeau de statut coloré
         if status_type == "success":
             st.success(f"✅ {status_txt}")
         elif status_type == "warning":
@@ -111,15 +98,12 @@ with row1_col1:
         else:
             st.error(f"🚨 {status_txt}")
 
-        # Métriques en dessous
         m1, m2, m3 = st.columns(3)
         m1.metric("Total Flows", f"{total_flows:,}")
         m2.metric("Normal Traffic", f"{pct_normal:.1f}%")
         m3.metric("Attack Traffic", f"{pct_attack:.1f}%", delta_color="inverse")
 
-# ==========================================
-# BLOC 2 : DETECTION & ALERTS (Inchangé)
-# ==========================================
+# BLOC 2 : DETECTION & ALERTS
 with row1_col2:
     with st.container(border=True):
         st.subheader("2️⃣ Detection & Alerts")
@@ -141,66 +125,9 @@ with row1_col2:
             )
             st.dataframe(disp_df, hide_index=True, use_container_width=True, height=200)
 
-# Ligne du bas
 row2_col1, row2_col2 = st.columns(2)
 
-# ==========================================
-# BLOC 4 : SLICE ANALYSIS (Modifié Complètement)
-# ==========================================
-with row2_col2:
-    with st.container(border=True):
-        st.subheader("4️⃣ Slice-Aware Analysis")
-        
-        # Onglets pour graphiques vs tableau détaillé
-        subtab1, subtab2 = st.tabs(["📊 Charts", "📋 Detailed Load Table"])
-        
-        with subtab1:
-            c1, c2 = st.columns(2)
-            with c1:
-                # Attack Rate per Slice
-                att_rate = df.groupby('slice_type')['prediction'].mean().reset_index()
-                fig_rate = px.bar(att_rate, x='slice_type', y='prediction', title="Attack Rate", 
-                                  color='slice_type', height=200)
-                fig_rate.update_layout(margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
-                st.plotly_chart(fig_rate, use_container_width=True)
-            with c2:
-                # Traffic Volume per Slice
-                vol = df.groupby('slice_type')['src_bytes'].sum().reset_index()
-                fig_vol = px.pie(vol, names='slice_type', values='src_bytes', title="Traffic Volume", 
-                                 hole=0.4, height=200)
-                fig_vol.update_layout(margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
-                st.plotly_chart(fig_vol, use_container_width=True)
-
-        with subtab2:
-            # Préparation du tableau complexe demandé
-            # 1. On aggrège
-            summary = df.groupby('slice_type').agg(
-                Avg_Bytes=('src_bytes', 'mean'),
-                Alert_Rate=('prediction', 'mean'),
-                Avg_Latency=('latency_ms', 'mean')
-            ).reset_index()
-            
-            # 2. On crée la colonne "Traffic High/Medium/Low"
-            def get_load_label(bytes_val):
-                if bytes_val > 100000: return "High 🔴"
-                elif bytes_val > 1000: return "Medium 🟡"
-                else: return "Low 🟢"
-            
-            summary['Traffic Load'] = summary['Avg_Bytes'].apply(get_load_label)
-            
-            # 3. Formatage pour l'affichage
-            summary['Alert Rate'] = (summary['Alert_Rate'] * 100).map('{:.1f}%'.format)
-            summary['Avg Latency'] = summary['Avg_Latency'].map('{:.2f} ms'.format)
-            
-            # 4. Sélection des colonnes finales
-            final_table = summary[['slice_type', 'Traffic Load', 'Alert Rate', 'Avg Latency']]
-            final_table.columns = ['Slice Type', 'Traffic Load', 'Alert Rate (%)', 'Avg Latency']
-            
-            st.dataframe(final_table, hide_index=True, use_container_width=True)
-
-# ==========================================
-# BLOC 3 : MODEL PERFORMANCE (Ajout ROC)
-# ==========================================
+# BLOC 3 : MODEL PERFORMANCE
 with row2_col1:
     with st.container(border=True):
         st.subheader("3️⃣ AI Performance")
@@ -208,15 +135,12 @@ with row2_col1:
         c_roc, c_metrics = st.columns([1.2, 0.8])
         
         with c_roc:
-            # Création d'une courbe ROC simulée (Mockup)
-            # Une belle courbe qui monte vite vers 1 (Bon modèle)
             fpr = [0, 0.05, 0.1, 0.2, 0.3, 0.5, 1]
             tpr = [0, 0.80, 0.92, 0.96, 0.98, 0.99, 1]
             
             fig_roc = px.area(x=fpr, y=tpr, title="ROC Curve (AUC=0.96)",
                               labels={'x':'False Positive Rate', 'y':'True Positive Rate'},
                               height=250)
-            # Ajout de la ligne diagonale (random classifier)
             fig_roc.add_shape(type='line', line=dict(dash='dash', color='grey'),
                               x0=0, x1=1, y0=0, y1=1)
             fig_roc.update_layout(margin=dict(l=20, r=20, t=40, b=20))
@@ -229,10 +153,53 @@ with row2_col1:
             st.caption("F1-Score: **91.0%**")
             
             st.markdown("##### Top Features")
-            # Petit barchart simplifié
             st.progress(90, text="src_bytes")
             st.progress(75, text="duration")
             st.progress(60, text="latency")
+
+# BLOC 4 : SLICE ANALYSIS
+with row2_col2:
+    with st.container(border=True):
+        st.subheader("4️⃣ Slice-Aware Analysis")
+        
+        subtab1, subtab2 = st.tabs(["📊 Charts", "📋 Detailed Load Table"])
+        
+        with subtab1:
+            c1, c2 = st.columns(2)
+            with c1:
+                att_rate = df.groupby('slice_type')['prediction'].mean().reset_index()
+                fig_rate = px.bar(att_rate, x='slice_type', y='prediction', title="Attack Rate", 
+                                  color='slice_type', height=200)
+                fig_rate.update_layout(margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
+                st.plotly_chart(fig_rate, use_container_width=True)
+            with c2:
+                vol = df.groupby('slice_type')['src_bytes'].sum().reset_index()
+                fig_vol = px.pie(vol, names='slice_type', values='src_bytes', title="Traffic Volume", 
+                                 hole=0.4, height=200)
+                fig_vol.update_layout(margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
+                st.plotly_chart(fig_vol, use_container_width=True)
+
+        with subtab2:
+            summary = df.groupby('slice_type').agg(
+                Avg_Bytes=('src_bytes', 'mean'),
+                Alert_Rate=('prediction', 'mean'),
+                Avg_Latency=('latency_ms', 'mean')
+            ).reset_index()
+            
+            def get_load_label(bytes_val):
+                if bytes_val > 100000: return "High 🔴"
+                elif bytes_val > 1000: return "Medium 🟡"
+                else: return "Low 🟢"
+            
+            summary['Traffic Load'] = summary['Avg_Bytes'].apply(get_load_label)
+            
+            summary['Alert Rate'] = (summary['Alert_Rate'] * 100).map('{:.1f}%'.format)
+            summary['Avg Latency'] = summary['Avg_Latency'].map('{:.2f} ms'.format)
+            
+            final_table = summary[['slice_type', 'Traffic Load', 'Alert Rate', 'Avg Latency']]
+            final_table.columns = ['Slice Type', 'Traffic Load', 'Alert Rate (%)', 'Avg Latency']
+            
+            st.dataframe(final_table, hide_index=True, use_container_width=True)
 
 # Bouton Refresh
 if st.button("🔄 Generate New 6G Traffic", use_container_width=True):
