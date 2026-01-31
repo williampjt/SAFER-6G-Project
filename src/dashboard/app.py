@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import os
 from datetime import datetime, timedelta
 
 st.set_page_config(
@@ -13,65 +14,88 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .stMetric {
-        background-color: #f8f9fa;
-        padding: 10px;
-        border-radius: 5px;
-        border: 1px solid #e9ecef;
+    /* 1. Fond des cartes (Metrics et Containers) */
+    .stMetric, .stContainer {
+        border: 1px solid #3E4A5B !important;
+        border-radius: 10px !important;
+        padding: 15px !important;
     }
-    h1, h2, h3 { color: #2E4053; }
+
+    /* 2. Titres des blocs */
+    h1, h2, h3 {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }           
+            
+    /* 4. Customisation des onglets (Tabs) */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+    }
+
+.stTabs [data-baseweb="tab"] {
+        background-color: #0f172b;
+        border-radius: 4px 4px 0px 0px;
+        color: white;
+        border: 2px solid #3E4A5B;
+        padding: 10px 20px;
+        margin-right: 5px;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
-def generate_mock_data(n_rows=500):
-    slices = np.random.choice(['eMBB', 'URLLC', 'mMTC'], n_rows, p=[0.4, 0.2, 0.4])
-    data = []
+@st.cache_data
+def load_model_results():
+    file_path = "data/processed/unsw_test_dashboard.csv" 
     
-    for s in slices:
-        timestamp = datetime.now() - timedelta(minutes=np.random.randint(0, 60))
-        
-        if s == 'eMBB': 
-            src_bytes = np.random.randint(50000, 1000000)
-            latency = np.random.uniform(5, 20)
-            is_attack = np.random.choice([0, 1], p=[0.90, 0.10])
-        elif s == 'URLLC': 
-            src_bytes = np.random.randint(100, 2000)
-            latency = np.random.uniform(0.1, 2.0)
-            is_attack = np.random.choice([0, 1], p=[0.95, 0.05])
-        else:
-            src_bytes = np.random.randint(20, 5000)
-            latency = np.random.uniform(20, 100)
-            is_attack = np.random.choice([0, 1], p=[0.85, 0.15])
-
-        prob = np.random.uniform(0.75, 0.99) if is_attack else np.random.uniform(0.01, 0.30)
-        attack_type = np.random.choice(['DDoS', 'Scan', 'Injection']) if is_attack else "Normal"
-        
-        data.append({
-            'ts': timestamp,
-            'src_bytes': src_bytes,
-            'duration': np.random.uniform(0.1, 5.0),
-            'slice_type': s,
-            'latency_ms': latency,
-            'prediction': is_attack,
-            'probability': prob,
-            'attack_type': attack_type
-        })
+    if not os.path.exists(file_path):
+        st.error(f"Fichier {file_path} non trouvé. Lancez d'abord le notebook.")
+        return pd.DataFrame()
     
-    return pd.DataFrame(data).sort_values('ts')
+    df = pd.read_csv(file_path)
+    return df
 
-if 'data' not in st.session_state:
-    st.session_state['data'] = generate_mock_data(500)
+def process_real_data(df_raw, n_rows=500):
+
+    df = df_raw.sample(n=min(n_rows, len(df_raw))).copy()
+    
+    now = datetime.now()
+    df['ts'] = [now - timedelta(seconds=np.random.randint(0, 3600)) for _ in range(len(df))]
+    
+    def assign_slice(row):
+        if row['dur'] < 0.05: return 'URLLC'
+        elif row['sbytes'] > 10000: return 'eMBB'
+        else: return 'mMTC'
+
+    df['slice_type'] = df.apply(assign_slice, axis=1)
+    
+    df['prediction'] = df['pred_label']
+    df['probability'] = df['pred_proba_attack']
+    df['attack_type'] = df['pred_attack_cat'].fillna("Normal")
+    df['src_bytes'] = df['sbytes']
+    df['latency_ms'] = df['dur'] * 1000
+    
+    return df.sort_values('ts')
+
+raw_results = load_model_results()
+
+if 'data' not in st.session_state and not raw_results.empty:
+    st.session_state['data'] = process_real_data(raw_results)
+
+if raw_results.empty:
+    st.warning("⚠️ En attente des données du modèle...")
+    st.stop()
+
 df = st.session_state['data']
 
-st.title("🛡️ SAFER-6G Security Dashboard")
-st.markdown("Decision Support System for **eMBB, URLLC, & mMTC** Network Slices")
+st.markdown("<h1 style='text-align: center;'>🛡️ SAFER-6G Security Dashboard</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center;'>Decision Support System for <b>eMBB, URLLC, & mMTC</b> Network Slices</p>", unsafe_allow_html=True)
 st.divider()
 
 row1_col1, row1_col2 = st.columns(2)
 
 # BLOC 1 : NETWORK OVERVIEW
 with row1_col1:
-    with st.container(border=True):
+    with st.container(border=True, height="stretch", vertical_alignment="center"):
         st.subheader("1️⃣ Network Overview")
         
         total_flows = len(df)
@@ -108,7 +132,7 @@ with row1_col2:
     with st.container(border=True):
         st.subheader("2️⃣ Detection & Alerts")
         
-        tab_graph, tab_alerts = st.tabs(["📉 Timeline", "⚠️ Recent Alerts"])
+        tab_graph, tab_alerts = st.tabs(["📉 Timeline", "⚠️ Alerts"])
         
         with tab_graph:
             timeline_df = df.set_index('ts').resample('1min')['prediction'].sum().reset_index()
@@ -117,7 +141,7 @@ with row1_col2:
             st.plotly_chart(fig_tl, use_container_width=True)
             
         with tab_alerts:
-            recent = df[df['prediction'] == 1].tail(5).copy()
+            recent = df[df['prediction'] == 1].copy()
             recent['ts'] = recent['ts'].dt.strftime('%H:%M:%S')
             recent['probability'] = (recent['probability']*100).apply(lambda x: f"{x:.1f}%")
             disp_df = recent[['ts', 'attack_type', 'slice_type', 'probability']].rename(
@@ -159,7 +183,7 @@ with row2_col1:
 
 # BLOC 4 : SLICE ANALYSIS
 with row2_col2:
-    with st.container(border=True):
+    with st.container(border=True, height="stretch", vertical_alignment="center"):
         st.subheader("4️⃣ Slice-Aware Analysis")
         
         subtab1, subtab2 = st.tabs(["📊 Charts", "📋 Detailed Load Table"])
@@ -202,6 +226,6 @@ with row2_col2:
             st.dataframe(final_table, hide_index=True, use_container_width=True)
 
 # Bouton Refresh
-if st.button("🔄 Generate New 6G Traffic", use_container_width=True):
-    st.session_state['data'] = generate_mock_data(500)
+if st.button("🔄 Simulate Next Traffic Batch", use_container_width=True):
+    st.session_state['data'] = process_real_data(raw_results)
     st.rerun()

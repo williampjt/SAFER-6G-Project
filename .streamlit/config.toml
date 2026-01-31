@@ -1,0 +1,7 @@
+[theme]
+base = "dark"
+primaryColor = "#E74C3C"         # Rouge pour les alertes et boutons
+backgroundColor = "#1d293d"      # Fond de la page (Bleu très sombre)
+secondaryBackgroundColor = "#0f172b" # Fond des cartes/containers
+textColor = "#E2E8F0"            # Texte principal
+font = "sans serif"
