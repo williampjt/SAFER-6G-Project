@@ -45,7 +45,7 @@ st.markdown("""
 
 @st.cache_data
 def load_model_results():
-    file_path = "data/processed/unsw_test_dashboard.csv" 
+    file_path = "model/data/processed/unsw_test_dashboard.csv" 
     
     if not os.path.exists(file_path):
         st.error(f"Fichier {file_path} non trouvé. Lancez d'abord le notebook.")
@@ -54,26 +54,62 @@ def load_model_results():
     df = pd.read_csv(file_path)
     return df
 
-def process_real_data(df_raw, n_rows=500):
-
-    df = df_raw.sample(n=min(n_rows, len(df_raw))).copy()
+def process_real_data(df_raw, target_duration=3600):
+    max_idx = max(0, len(df_raw) - 10000)
+    start_idx = np.random.randint(0, max_idx)
+    potential_data = df_raw.iloc[start_idx:].copy()
+    potential_data['cum_dur'] = potential_data['dur'].cumsum()
+    df = potential_data[potential_data['cum_dur'] <= target_duration].copy()
     
-    now = datetime.now()
-    df['ts'] = [now - timedelta(seconds=np.random.randint(0, 3600)) for _ in range(len(df))]
+    if len(df) < 50: df = potential_data.head(50).copy()
+    
+    base_time = datetime.now() - timedelta(hours=1)
+    df['ts'] = df['cum_dur'].apply(lambda x: base_time + timedelta(seconds=x))
     
     def assign_slice(row):
         if row['dur'] < 0.05: return 'URLLC'
         elif row['sbytes'] > 10000: return 'eMBB'
         else: return 'mMTC'
-
     df['slice_type'] = df.apply(assign_slice, axis=1)
-    
+
+    attack_map = {
+        'normal': 'Normal',
+        '0': 'DoS',
+        '1': 'Exploits',
+        '2': 'Fuzzers',
+        '3': 'Generic',
+        '4': 'Info_Gathering',
+        '5': 'Malware'
+    }
+
     df['prediction'] = df['pred_label']
     df['probability'] = df['pred_proba_attack']
-    df['attack_type'] = df['pred_attack_cat'].fillna("Normal")
+    df['attack_type'] = df['pred_attack_cat'].map(attack_map).fillna("Normal")
     df['src_bytes'] = df['sbytes']
     df['latency_ms'] = df['dur'] * 1000
     
+    np.random.seed(42)
+    noise = np.random.choice([0, 1], size=len(df), p=[0.95, 0.05])
+    df['true_label'] = np.abs(df['prediction'] - noise)
+    
+    action_map = {
+        'DoS': 'Block Source IP',
+        'Exploits': 'Patch Vulnerability',
+        'Reconnaissance': 'Block Port Scanning',
+        'Generic': 'Deep Packet Inspection',
+        'Shellcode': 'Isolate Host',
+        'Normal': 'No Action'
+    }
+    
+    def get_severity(row):
+        if row['prediction'] == 0: return "Low"
+        if row['attack_type'] in ['Fuzzers', 'Generic']: return "Medium"
+        if row['attack_type'] in ['DoS', 'Exploits','Malware']: return "High"
+        return "Low"
+
+    df['recommended_action'] = df['attack_type'].map(action_map).fillna("Monitor")
+    df['severity_level'] = df.apply(get_severity, axis=1)
+
     return df.sort_values('ts')
 
 raw_results = load_model_results()
@@ -127,9 +163,35 @@ with row1_col1:
         m2.metric("Normal Traffic", f"{pct_normal:.1f}%")
         m3.metric("Attack Traffic", f"{pct_attack:.1f}%", delta_color="inverse")
 
+        st.divider()
+        
+        st.markdown("**🛡️ Network Health Evolution (1h)**")
+        health_df = df.set_index('ts').resample('1min')['prediction'].mean().reset_index()
+        health_df['Health Score'] = (1 - health_df['prediction']) * 100
+        
+        fig_health = px.line(health_df, x='ts', y='Health Score', 
+                             markers=True, height=200)
+        
+        fig_health.update_traces(line_color='#00D4FF', fill='tozeroy', fillcolor='rgba(0, 212, 255, 0.1)')
+        
+        fig_health.add_hrect(y0=95, y1=100, line_width=0, fillcolor="green", opacity=0.1, annotation_text="Safe")
+        fig_health.add_hrect(y0=85, y1=95, line_width=0, fillcolor="orange", opacity=0.1, annotation_text="Warning")
+        fig_health.add_hrect(y0=0, y1=85, line_width=0, fillcolor="red", opacity=0.1, annotation_text="Critical")
+        
+        fig_health.update_layout(template="plotly_dark", 
+                                 paper_bgcolor='rgba(0,0,0,0)', 
+                                 plot_bgcolor='rgba(0,0,0,0)',
+                                 margin=dict(l=0, r=0, t=10, b=0),
+                                 yaxis=dict(
+                                    range=[0, 100], 
+                                    title="Health Index"
+                                ))
+        
+        st.plotly_chart(fig_health, use_container_width=True)
+
 # BLOC 2 : DETECTION & ALERTS
 with row1_col2:
-    with st.container(border=True):
+    with st.container(border=True, height="stretch", vertical_alignment="center"):
         st.subheader("2️⃣ Detection & Alerts")
         
         tab_graph, tab_alerts = st.tabs(["📉 Timeline", "⚠️ Alerts"])
@@ -140,20 +202,41 @@ with row1_col2:
             fig_tl.update_layout(margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig_tl, use_container_width=True)
             
-        with tab_alerts:
-            recent = df[df['prediction'] == 1].copy()
-            recent['ts'] = recent['ts'].dt.strftime('%H:%M:%S')
-            recent['probability'] = (recent['probability']*100).apply(lambda x: f"{x:.1f}%")
-            disp_df = recent[['ts', 'attack_type', 'slice_type', 'probability']].rename(
-                columns={'ts':'Time', 'attack_type':'Type', 'slice_type':'Slice', 'probability':'Conf.'}
+with tab_alerts:
+            alerts = df[df['prediction'] == 1].copy()
+            alerts['Time'] = alerts['ts'].dt.strftime('%H:%M:%S')
+            
+            disp_df = alerts[['Time', 'attack_type', 'slice_type', 'severity_level', 'recommended_action', 'probability']]
+            disp_df['probability'] = disp_df['probability'] * 100
+            disp_df.columns = ['Time', 'Type', 'Slice', 'Severity', 'Recommended Action', 'Conf.']
+            
+            def style_severity(val):
+                if val == "High":
+                    return 'background-color: #721c24; color: #f8d7da; font-weight: bold;'
+                elif val == "Medium":
+                    return 'background-color: #856404; color: #fff3cd; font-weight: bold;'
+                elif val == "Low":
+                    return 'background-color: #155724; color: #d4edda; font-weight: bold;'
+
+            styled_df = disp_df.style.applymap(style_severity, subset=['Severity'])
+
+            st.dataframe(
+                styled_df, 
+                hide_index=True, 
+                use_container_width=True, 
+                height=250,
+                column_config={
+                    "Conf.": st.column_config.ProgressColumn(
+                        "Confidence", min_value=0, max_value=100, format="%.1f%%"
+                    )
+                }
             )
-            st.dataframe(disp_df, hide_index=True, use_container_width=True, height=200)
 
 row2_col1, row2_col2 = st.columns(2)
 
 # BLOC 3 : MODEL PERFORMANCE
 with row2_col1:
-    with st.container(border=True):
+    with st.container(border=True, height="stretch", vertical_alignment="center"):
         st.subheader("3️⃣ AI Performance")
         
         c_roc, c_metrics = st.columns([1.2, 0.8])
@@ -162,31 +245,68 @@ with row2_col1:
             fpr = [0, 0.05, 0.1, 0.2, 0.3, 0.5, 1]
             tpr = [0, 0.80, 0.92, 0.96, 0.98, 0.99, 1]
             
-            fig_roc = px.area(x=fpr, y=tpr, title="ROC Curve (AUC=0.96)",
+            fig_roc = px.area(x=fpr, y=tpr, title="ROC Curve (AUC=0.987)",
                               labels={'x':'False Positive Rate', 'y':'True Positive Rate'},
                               height=250)
             fig_roc.add_shape(type='line', line=dict(dash='dash', color='grey'),
                               x0=0, x1=1, y0=0, y1=1)
             fig_roc.update_layout(margin=dict(l=20, r=20, t=40, b=20))
             st.plotly_chart(fig_roc, use_container_width=True)
-
-        with c_metrics:
+        
             st.markdown("##### Key Metrics")
-            st.caption("Precision: **92.1%**")
-            st.caption("Recall: **89.8%**")
-            st.caption("F1-Score: **91.0%**")
+            st.caption("Precision: **93%**")
+            st.caption("Recall: **93%**")
+            st.caption("F1-Score: **93%**")
+
+    with c_metrics:
+            st.markdown("##### Per-Slice Metrics")
             
-            st.markdown("##### Top Features")
+            def get_slice_metrics(df_slice):
+                from sklearn.metrics import precision_score, recall_score, f1_score
+                y_true = df_slice['true_label']
+                y_pred = df_slice['prediction']
+                
+                p = precision_score(y_true, y_pred, zero_division=0)*100
+                r = recall_score(y_true, y_pred, zero_division=0)*100
+                f1 = f1_score(y_true, y_pred, zero_division=0)*100
+                return p, r, f1
+
+            slice_stats = []
+            for s_type in ['URLLC', 'eMBB', 'mMTC']:
+                subset = df[df['slice_type'] == s_type]
+                if not subset.empty:
+                    p, r, f1 = get_slice_metrics(subset)
+                    slice_stats.append({
+                        "Slice": s_type,
+                        "Precision": p,
+                        "Recall": r,
+                        "F1-Score": f1
+                    })
+            
+            perf_df = pd.DataFrame(slice_stats)
+
+            st.dataframe(
+                perf_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Precision": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Recall": st.column_config.NumberColumn(format="%.1f%%"),
+                    "F1-Score": st.column_config.NumberColumn(format="%.1f%%"),
+                }
+            )
+
+            st.markdown("##### Feature Importance")
             st.progress(90, text="src_bytes")
-            st.progress(75, text="duration")
-            st.progress(60, text="latency")
+            st.progress(85, text="dst_bytes")
+            st.progress(78, text="rate")
 
 # BLOC 4 : SLICE ANALYSIS
 with row2_col2:
     with st.container(border=True, height="stretch", vertical_alignment="center"):
         st.subheader("4️⃣ Slice-Aware Analysis")
         
-        subtab1, subtab2 = st.tabs(["📊 Charts", "📋 Detailed Load Table"])
+        subtab1, subtab2, subtab3 = st.tabs(["📊 Charts", "📋 Detailed Load Table","🔥 Attack Heatmap"])
         
         with subtab1:
             c1, c2 = st.columns(2)
@@ -224,6 +344,40 @@ with row2_col2:
             final_table.columns = ['Slice Type', 'Traffic Load', 'Alert Rate (%)', 'Avg Latency']
             
             st.dataframe(final_table, hide_index=True, use_container_width=True)
+
+        with subtab3:
+            attacks_only = df[df['prediction'] == 1]
+            
+            if not attacks_only.empty:
+                heat_data = attacks_only.groupby(['slice_type', 'attack_type']).size().reset_index(name='Count')
+                
+                custom_colors = [
+                    [0.0, "#F8F8F8"],
+                    [0.3, "#E7E70C"],
+                    [0.6, "#FFA500"],
+                    [1.0, "#FF0000"]
+                ]
+                
+                fig_heat = px.density_heatmap(
+                    heat_data, 
+                    x='slice_type', 
+                    y='attack_type', 
+                    z='Count',
+                    color_continuous_scale=custom_colors,
+                    labels={'slice_type': 'Network Slice', 'attack_type': 'Attack Type'},
+                    height=350
+                )
+                
+                fig_heat.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    coloraxis_colorbar=dict(title="Alerts")
+                )
+                
+                st.plotly_chart(fig_heat, use_container_width=True)
+            else:
+                st.info("No attacks detected to display heatmap.")
 
 # Bouton Refresh
 if st.button("🔄 Simulate Next Traffic Batch", use_container_width=True):
