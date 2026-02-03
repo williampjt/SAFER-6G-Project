@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
+from sklearn.metrics import roc_curve, auc, precision_score, recall_score, f1_score
 import os
 from datetime import datetime, timedelta
 
@@ -83,22 +83,16 @@ def process_real_data(df_raw, target_duration=3600):
     }
 
     df['prediction'] = df['pred_label']
-    df['probability'] = df['pred_proba_attack']
     df['attack_type'] = df['pred_attack_cat'].map(attack_map).fillna("Normal")
-    df['src_bytes'] = df['sbytes']
     df['latency_ms'] = df['dur'] * 1000
     
-    np.random.seed(42)
-    noise = np.random.choice([0, 1], size=len(df), p=[0.95, 0.05])
-    df['true_label'] = np.abs(df['prediction'] - noise)
-    
     action_map = {
-        'DoS': 'Block Source IP',
-        'Exploits': 'Patch Vulnerability',
-        'Reconnaissance': 'Block Port Scanning',
-        'Generic': 'Deep Packet Inspection',
-        'Shellcode': 'Isolate Host',
-        'Normal': 'No Action'
+        'DoS': 'Rate Limiting & IP Blocking',
+        'Exploits': 'System Patching & Virtual Patching',
+        'Fuzzers': 'Sanitize Inputs & Protocol Filtering',
+        'Generic': 'Deep Packet Inspection (DPI)',
+        'Info_Gathering': 'Restrict Port Access & Obfuscation',
+        'Malware': 'Isolate Host & Sandbox Execution',
     }
     
     def get_severity(row):
@@ -206,8 +200,8 @@ with tab_alerts:
             alerts = df[df['prediction'] == 1].copy()
             alerts['Time'] = alerts['ts'].dt.strftime('%H:%M:%S')
             
-            disp_df = alerts[['Time', 'attack_type', 'slice_type', 'severity_level', 'recommended_action', 'probability']]
-            disp_df['probability'] = disp_df['probability'] * 100
+            disp_df = alerts[['Time', 'attack_type', 'slice_type', 'severity_level', 'recommended_action', 'pred_proba_attack']]
+            disp_df['pred_proba_attack'] = disp_df['pred_proba_attack'] * 100
             disp_df.columns = ['Time', 'Type', 'Slice', 'Severity', 'Recommended Action', 'Conf.']
             
             def style_severity(val):
@@ -242,15 +236,24 @@ with row2_col1:
         c_roc, c_metrics = st.columns([1.2, 0.8])
         
         with c_roc:
-            fpr = [0, 0.05, 0.1, 0.2, 0.3, 0.5, 1]
-            tpr = [0, 0.80, 0.92, 0.96, 0.98, 0.99, 1]
+            fpr, tpr, _ = roc_curve(raw_results['label'], raw_results['pred_proba_attack'])
+            roc_auc = auc(fpr, tpr)
+                
+            fig_roc = px.area(
+                x=fpr[::10], y=tpr[::10],
+                title=f"Real-time ROC Curve (AUC={roc_auc:.3f})",
+                labels={'x':'False Positive Rate', 'y':'True Positive Rate'},
+                height=250)
+
+            fig_roc.add_shape(
+                type='line', line=dict(dash='dash', color='white'),
+                x0=0, x1=1, y0=0, y1=1
+            )
+
+            fig_roc.update_layout(
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
             
-            fig_roc = px.area(x=fpr, y=tpr, title="ROC Curve (AUC=0.987)",
-                              labels={'x':'False Positive Rate', 'y':'True Positive Rate'},
-                              height=250)
-            fig_roc.add_shape(type='line', line=dict(dash='dash', color='grey'),
-                              x0=0, x1=1, y0=0, y1=1)
-            fig_roc.update_layout(margin=dict(l=20, r=20, t=40, b=20))
             st.plotly_chart(fig_roc, use_container_width=True)
         
             st.markdown("##### Key Metrics")
@@ -260,11 +263,11 @@ with row2_col1:
 
     with c_metrics:
             st.markdown("##### Per-Slice Metrics")
-            
-            def get_slice_metrics(df_slice):
-                from sklearn.metrics import precision_score, recall_score, f1_score
-                y_true = df_slice['true_label']
-                y_pred = df_slice['prediction']
+
+            @st.cache_data
+            def get_slice_metrics(df_raw_slice):
+                y_true = df_raw_slice['label']
+                y_pred = df_raw_slice['pred_label']
                 
                 p = precision_score(y_true, y_pred, zero_division=0)*100
                 r = recall_score(y_true, y_pred, zero_division=0)*100
@@ -272,16 +275,16 @@ with row2_col1:
                 return p, r, f1
 
             slice_stats = []
+            if 'slice_type' not in raw_results.columns:
+                raw_results['slice_type'] = raw_results.apply(
+                    lambda x: 'URLLC' if x['dur'] < 0.05 else ('eMBB' if x['sbytes'] > 10000 else 'mMTC'), axis=1
+                )
+                
             for s_type in ['URLLC', 'eMBB', 'mMTC']:
-                subset = df[df['slice_type'] == s_type]
-                if not subset.empty:
-                    p, r, f1 = get_slice_metrics(subset)
-                    slice_stats.append({
-                        "Slice": s_type,
-                        "Precision": p,
-                        "Recall": r,
-                        "F1-Score": f1
-                    })
+                global_subset = raw_results[raw_results['slice_type'] == s_type]
+                if not global_subset.empty:
+                    p, r, f1 = get_slice_metrics(global_subset)
+                    slice_stats.append({"Slice": s_type, "Precision": p, "Recall": r, "F1": f1})
             
             perf_df = pd.DataFrame(slice_stats)
 
@@ -297,9 +300,11 @@ with row2_col1:
             )
 
             st.markdown("##### Feature Importance")
-            st.progress(90, text="src_bytes")
-            st.progress(85, text="dst_bytes")
-            st.progress(78, text="rate")
+            st.progress(57, text="num_ct_state_ttl")
+            st.progress(20, text="num_sttl")
+            st.progress(3, text="cat_service_dns")
+            st.progress(2, text="cat_proto_arp")
+            st.progress(2, text="num_dttl")
 
 # BLOC 4 : SLICE ANALYSIS
 with row2_col2:
@@ -317,15 +322,15 @@ with row2_col2:
                 fig_rate.update_layout(margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
                 st.plotly_chart(fig_rate, use_container_width=True)
             with c2:
-                vol = df.groupby('slice_type')['src_bytes'].sum().reset_index()
-                fig_vol = px.pie(vol, names='slice_type', values='src_bytes', title="Traffic Volume", 
+                vol = df.groupby('slice_type')['sbytes'].sum().reset_index()
+                fig_vol = px.pie(vol, names='slice_type', values='sbytes', title="Traffic Volume", 
                                  hole=0.4, height=200)
                 fig_vol.update_layout(margin=dict(l=0, r=0, t=30, b=0), showlegend=False)
                 st.plotly_chart(fig_vol, use_container_width=True)
 
         with subtab2:
             summary = df.groupby('slice_type').agg(
-                Avg_Bytes=('src_bytes', 'mean'),
+                Avg_Bytes=('sbytes', 'mean'),
                 Alert_Rate=('prediction', 'mean'),
                 Avg_Latency=('latency_ms', 'mean')
             ).reset_index()
